@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>My Bus Times</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    /* Basic styling for a minimal, high-contrast display suitable for 800×480 e-ink. */
+    html, body {
+      margin: 0;
+      padding: 0;
+      background-color: #fff;
+      color: #000;
+      font-family: sans-serif;
+      width: 800px;
+      height: 480px;
+      box-sizing: border-box;
+      overflow: hidden; /* Remove if you need scrollbars */
+    }
+
+    #app {
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      align-items: center;
+      text-align: center;
+      padding: 1rem;
+      box-sizing: border-box;
+    }
+
+    h1 {
+      margin: 0.2em 0;
+      font-size: 1.5em;
+    }
+
+    #stop-info {
+      font-size: 1.1em;
+      margin-bottom: 1em;
+    }
+
+    #last-updated {
+      margin-bottom: 2em;
+      font-size: 0.9em;
+      color: #333;
+    }
+
+    #times {
+      width: 100%;
+      max-width: 600px;
+      margin: 0 auto;
+      font-size: 1.2em;
+      text-align: left;
+    }
+
+    .bus-row {
+      border-bottom: 1px solid #000;
+      padding: 0.5em 0;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .destination {
+      flex: 1;
+      text-align: left;
+      margin-left: 1em;
+    }
+
+    .due-time {
+      margin-left: 1em;
+      white-space: nowrap;
+    }
+
+    .error {
+      color: red;
+      font-weight: bold;
+      margin-top: 1em;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <h1>Next Buses</h1>
+    <div id="stop-info">Loading stop info...</div>
+    <div id="last-updated"></div>
+    <div id="times">Loading bus data...</div>
+  </div>
+
+  <script>
+    // 1) Read ?stop=YOUR_STOP_ID from the URL
+    const params = new URLSearchParams(window.location.search);
+    const stopId = params.get('stop');
+
+    if (!stopId) {
+      document.getElementById('times').textContent =
+        'Error: No "stop" parameter found in the URL (e.g. ?stop=0180BAC30280)';
+      throw new Error('No stop parameter provided.');
+    }
+
+    // 2) Build the AllOrigins URL
+    const ALLORIGINS_URL = 'https://api.allorigins.win/get?url=';
+    const FIRSTBUS_API = `https://www.firstbus.co.uk/api/get-next-bus?stop=${stopId}`;
+    const FULL_URL = ALLORIGINS_URL + encodeURIComponent(FIRSTBUS_API);
+
+    // 3) Fetch data on page load, then refresh every 60s
+    fetchBusData();
+    setInterval(fetchBusData, 60_000);
+
+    async function fetchBusData() {
+      try {
+        const response = await fetch(FULL_URL);
+        if (!response.ok) {
+          throw new Error('Network response was not ok.');
+        }
+        const data = await response.json();
+
+        if (!data.contents) {
+          throw new Error('AllOrigins returned an empty contents field.');
+        }
+
+        const busData = JSON.parse(data.contents);
+        displayStopInfo(busData);
+        displayBusTimes(busData);
+      } catch (error) {
+        console.error('Error fetching bus data:', error);
+        document.getElementById('times').innerHTML =
+          `<div class="error">Error fetching bus data: ${error.message}</div>`;
+      }
+    }
+
+    // 4) Display the bus stop name and last updated time
+    function displayStopInfo(busData) {
+      const stopInfoDiv = document.getElementById('stop-info');
+      const stopName = busData.stop_name || busData.name || '(No Stop Name)';
+      const locality = busData.locality ? ` - ${busData.locality}` : '';
+      stopInfoDiv.textContent = `From: ${stopName}${locality}`;
+
+      const lastUpdatedDiv = document.getElementById('last-updated');
+      if (!busData.request_time) {
+        lastUpdatedDiv.textContent = 'No request_time in response.';
+        return;
+      }
+
+      const requestDate = new Date(busData.request_time);
+      if (isNaN(requestDate.getTime())) {
+        lastUpdatedDiv.textContent = `Invalid request_time: ${busData.request_time}`;
+        return;
+      }
+
+      lastUpdatedDiv.textContent = `Last updated: ${formatDateTime(requestDate)}`;
+    }
+
+    // 5) Display bus times (sort + deduplicate)
+    function displayBusTimes(busData) {
+      const timesDiv = document.getElementById('times');
+      timesDiv.innerHTML = '';
+
+      if (!Array.isArray(busData.times) || busData.times.length === 0) {
+        timesDiv.textContent = 'No bus data available.';
+        return;
+      }
+
+      const requestTime = new Date(busData.request_time);
+      if (isNaN(requestTime.getTime())) {
+        timesDiv.textContent = 'Invalid request_time date; cannot calculate bus arrivals.';
+        return;
+      }
+
+      // 1) Map each bus to { bus, arrivalTime, minutesLabel } for easier sorting & dedupe
+      const busesWithArrival = busData.times.map((bus) => {
+        const { arrivalTime, minutesLabel } = getArrivalTime(requestTime, bus.Due || '');
+        return { bus, arrivalTime, minutesLabel };
+      });
+
+      // 2) Dedupe any that have same service, same destination, same arrivalTime
+      // Build a set of keys so we skip duplicates
+      const seen = new Set();
+      const uniqueBuses = [];
+
+      for (const item of busesWithArrival) {
+        // Make a unique key like "ServiceNumber|Destination|YYYY-MM-DDTHH:mm..."
+        const svc = item.bus.ServiceNumber || '???';
+        const dest = item.bus.Destination || '???';
+        const arrivalIso = item.arrivalTime.toISOString(); // or just item.arrivalTime.getTime()
+        const key = `${svc}|${dest}|${arrivalIso}`;
+
+        if (!seen.has(key)) {
+          seen.add(key);
+          uniqueBuses.push(item);
+        }
+      }
+
+      // 3) Sort the unique results by arrivalTime ascending
+      uniqueBuses.sort((a, b) => a.arrivalTime - b.arrivalTime);
+
+      // 4) Render them
+      if (uniqueBuses.length === 0) {
+        timesDiv.textContent = 'No bus data (after removing duplicates).';
+        return;
+      }
+
+      uniqueBuses.forEach(({ bus, arrivalTime, minutesLabel }) => {
+        const row = document.createElement('div');
+        row.className = 'bus-row';
+
+        // Service number
+        const serviceEl = document.createElement('span');
+        serviceEl.textContent = bus.ServiceNumber || '???';
+
+        // Destination
+        const destEl = document.createElement('span');
+        destEl.className = 'destination';
+        destEl.textContent = bus.Destination || 'Unknown Destination';
+
+        // "X mins" or "Due now"
+        const dueTimeEl = document.createElement('span');
+        dueTimeEl.className = 'due-time';
+        dueTimeEl.textContent = minutesLabel;
+
+        // 24-hour arrival time
+        const arrivalTimeEl = document.createElement('span');
+        arrivalTimeEl.className = 'due-time';
+        arrivalTimeEl.textContent = formatTime24(arrivalTime);
+
+        row.appendChild(serviceEl);
+        row.appendChild(destEl);
+        row.appendChild(dueTimeEl);
+        row.appendChild(arrivalTimeEl);
+        timesDiv.appendChild(row);
+      });
+    }
+
+    /**
+     * Converts "15 mins" or "Due now" into a Date arrivalTime
+     * and returns: { arrivalTime: Date, minutesLabel: string }
+     */
+    function getArrivalTime(requestTime, dueString) {
+      let minutes = 0;
+      let minutesLabel = dueString.toLowerCase();
+
+      if (minutesLabel.includes('due now')) {
+        minutes = 0;
+        minutesLabel = 'Due now';
+      } else {
+        const match = minutesLabel.match(/(\d+)\s*mins/);
+        if (match) {
+          minutes = parseInt(match[1], 10);
+          if (isNaN(minutes)) minutes = 0;
+          minutesLabel = `${minutes} mins`;
+        }
+      }
+
+      const arrivalTime = new Date(requestTime.getTime() + minutes * 60_000);
+      return { arrivalTime, minutesLabel };
+    }
+
+    /**
+     * Format a Date object in HH:mm (24h) format
+     */
+    function formatTime24(dateObj) {
+      if (!(dateObj instanceof Date) || isNaN(dateObj.getTime())) {
+        return '??:??';
+      }
+      const hours = String(dateObj.getHours()).padStart(2, '0');
+      const mins = String(dateObj.getMinutes()).padStart(2, '0');
+      return `${hours}:${mins}`;
+    }
+
+    /**
+     * Format the request_time, e.g. "2025-02-12 22:50:56"
+     */
+    function formatDateTime(dateObj) {
+      if (!(dateObj instanceof Date) || isNaN(dateObj.getTime())) {
+        return '(Invalid date)';
+      }
+      const year = dateObj.getFullYear();
+      const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+      const day = String(dateObj.getDate()).padStart(2, '0');
+      const hours = String(dateObj.getHours()).padStart(2, '0');
+      const minutes = String(dateObj.getMinutes()).padStart(2, '0');
+      const seconds = String(dateObj.getSeconds()).padStart(2, '0');
+      return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+    }
+  </script>
+</body>
+</html>
