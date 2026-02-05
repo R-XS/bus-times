@@ -87,6 +87,9 @@
 
   <script>
     // 1) Read stop ID from (in priority order): path /stop/XXX → hash #/stop/XXX → query ?stop=XXX
+    // If none provided, fall back to default stop
+
+    const DEFAULT_STOP_ID = "0180BAC30280";
 
     function resolveStopId() {
       // Path: /stop/XXXXX
@@ -108,16 +111,11 @@
         return queryStop;
       }
 
-      return null;
+      // Fallback default
+      return DEFAULT_STOP_ID;
     }
 
     const stopId = resolveStopId();
-
-    if (!stopId) {
-      document.getElementById('times').textContent =
-        'Error: No stop provided via /stop/XXXX, #/stop/XXXX or ?stop=XXXX';
-      throw new Error('No stop parameter provided.');
-    }
 
     // 2) Build the AllOrigins URL
     const ALLORIGINS_URL = 'https://api.allorigins.win/get?url=';
