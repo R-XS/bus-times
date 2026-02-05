@@ -86,13 +86,36 @@
   </div>
 
   <script>
-    // 1) Read ?stop=YOUR_STOP_ID from the URL
-    const params = new URLSearchParams(window.location.search);
-    const stopId = params.get('stop');
+    // 1) Read stop ID from (in priority order): path /stop/XXX → hash #/stop/XXX → query ?stop=XXX
+
+    function resolveStopId() {
+      // Path: /stop/XXXXX
+      const pathMatch = window.location.pathname.match(/\/stop\/([^\/]+)/i);
+      if (pathMatch && pathMatch[1]) {
+        return pathMatch[1];
+      }
+
+      // Hash: #/stop/XXXXX
+      const hashMatch = window.location.hash.match(/\/stop\/([^\/]+)/i);
+      if (hashMatch && hashMatch[1]) {
+        return hashMatch[1];
+      }
+
+      // Query: ?stop=XXXXX
+      const params = new URLSearchParams(window.location.search);
+      const queryStop = params.get('stop');
+      if (queryStop) {
+        return queryStop;
+      }
+
+      return null;
+    }
+
+    const stopId = resolveStopId();
 
     if (!stopId) {
       document.getElementById('times').textContent =
-        'Error: No "stop" parameter found in the URL (e.g. ?stop=0180BAC30280)';
+        'Error: No stop provided via /stop/XXXX, #/stop/XXXX or ?stop=XXXX';
       throw new Error('No stop parameter provided.');
     }
 
@@ -172,15 +195,13 @@
       });
 
       // 2) Dedupe any that have same service, same destination, same arrivalTime
-      // Build a set of keys so we skip duplicates
       const seen = new Set();
       const uniqueBuses = [];
 
       for (const item of busesWithArrival) {
-        // Make a unique key like "ServiceNumber|Destination|YYYY-MM-DDTHH:mm..."
         const svc = item.bus.ServiceNumber || '???';
         const dest = item.bus.Destination || '???';
-        const arrivalIso = item.arrivalTime.toISOString(); // or just item.arrivalTime.getTime()
+        const arrivalIso = item.arrivalTime.toISOString();
         const key = `${svc}|${dest}|${arrivalIso}`;
 
         if (!seen.has(key)) {
